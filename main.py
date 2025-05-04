@@ -9,7 +9,7 @@ FRAMES_DIR = os.path.join("extracted_frames", VIDEO_NAME)
 OUTPUT_PATH = f"output/{VIDEO_NAME}_stitched.jpg"
 
 def get_frame_paths(frames_dir):
-    """Collect and return sorted paths of all frames in the extracted directory."""
+    # * Collect and return sorted paths of all frames in the extracted directory. """
     frames = sorted([
         os.path.join(frames_dir, fname)
         for fname in os.listdir(frames_dir)
@@ -18,7 +18,7 @@ def get_frame_paths(frames_dir):
     return frames
 
 def main():
-    # Step 1: Get paths to all extracted frames
+    # * Step 1: Get paths to all extracted frames
     frame_paths = get_frame_paths(FRAMES_DIR)
     print(f"Found {len(frame_paths)} frames to stitch.")
 
@@ -35,10 +35,10 @@ def main():
         print("Need at least two valid images to stitch. Exiting.")
         return
 
-    # Step 3: Initialize the stitcher
+    # * Step 3: Initialize the stitcher
     stitcher = HighResStitcher(method="sift", match_ratio=0.75)
 
-    # Step 4: Perform stitching
+    # * Step 4: Perform stitching
     print("Starting stitching process...")
     result = stitcher.stitch(images)
 
