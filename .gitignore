@@ -1,3 +1,4 @@
 /extracted_frames
 /output/debug*
 **/.DS_Store
+__pycache__
