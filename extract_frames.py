@@ -1,23 +1,17 @@
 import cv2
 import os
 
-video_number = 1
-# change as per input video
-
-if video_number in (1,2,4):
-    video_name = f"video{video_number}/real_00{video_number}"
-elif video_number == 3:
-    video_name = f"video{video_number}/deer1"
-elif video_number == 5:
-    video_name = f"video{video_number}/forest1"
+video_number = 6
+clip_number = 3
+video_name = f"video{video_number}/{clip_number}"
 
 print(video_name)
 
 # set up video capture
 cap = cv2.VideoCapture(f"video_data/{video_name}.mp4")
-frame_rate = 10 # Save every frame
+frame_rate = 1# Save every frame
 count = 0
-output_dir = f"extracted_frames/video_{video_number}_every_{frame_rate}/"
+output_dir = f"extracted_frames/video_{video_number}_{clip_number}_every_{frame_rate}/"
 
 os.makedirs(output_dir, exist_ok=True)
 # loop through video frames and save them

@@ -6,9 +6,9 @@ video_number = 1
 
 # set up video capture
 cap = cv2.VideoCapture(f"video_data/video{video_number}/real_00{video_number}.mp4")
-frame_rate = 1 # Save every frame
+frame_rate = 10 # Save every frame
 count = 0
-output_dir = f"frames_{video_number}"
+output_dir = f"extracted_frames/ten_{video_number}"
 os.makedirs(output_dir, exist_ok=True)
 
 # loop through video frames and save them

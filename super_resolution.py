@@ -4,13 +4,31 @@ import glob
 from tqdm import tqdm
 import os
 import matplotlib.pyplot as plt
+import time
 
-from util import rgb_to_ycbcr, show_ycbcr_channels
+from util import rgb_to_ycbcr, show_ycbcr_channels, ycbcr_to_rgb
 
-
-FRAME_DIR = "extracted_frames/every_3_video1_max30"
+FRAME_DIR = "extracted_frames/video_6_3_every_1"
 FRAME_SCALE = 1.0
 
+
+# ========= FRAME EXTRACTION =========
+def extract_frames(video_path, output_dir, frame_rate=1):
+    os.makedirs(output_dir, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+    count = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if int(cap.get(1)) % frame_rate == 0:
+            frame_path = os.path.join(output_dir, f"frame_{count:03d}.jpg")
+            cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
+            print(f"📸 Extracted frame {count}")
+            count += 1
+    cap.release()
+    print(f"✅ Done extracting {count} frames.")
 
 def load_frame(path):
     img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB).astype(np.float32)/255.0
@@ -65,13 +83,44 @@ def align_frames_ecc(reference, y_frames, ecc_threshold=0.80):
             else:
                 print(f"⚠️ Frame {i+1} rejected (ECC = {ecc_score:.3f})")
                 break
-                
 
         except cv2.error as e:
             print(f"❌ Frame {i+1} alignment failed: {e}")
 
     return aligned_frames, i+1
-        
+
+def back_projection_sr_confidence(aligned_y, scale=2, num_iters=5):
+    base_lr = aligned_y[0]
+    h, w = base_lr.shape
+
+    hr = cv2.resize(base_lr, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+
+    # Confidence map: count of valid contributions
+    confidence = np.zeros_like(hr, dtype=np.float32)
+
+    for it in range(num_iters):
+        correction = np.zeros_like(hr, dtype=np.float32)
+        confidence[:] = 0  # reset confidence for this iteration
+
+        for i, lr in enumerate(aligned_y):
+            simulated_lr = cv2.resize(hr, (w, h), interpolation=cv2.INTER_LINEAR)
+            residual = lr - simulated_lr
+            residual_up = cv2.resize(residual, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
+
+            # Where is this frame contributing? (not black)
+            mask = (lr > 1e-3).astype(np.float32)
+            mask_up = cv2.resize(mask, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
+
+            correction += residual_up 
+            confidence += mask_up
+
+        # Avoid divide-by-zero by clamping confidence
+        safe_confidence = np.clip(confidence, 1e-3, None)
+        hr += correction / safe_confidence
+
+    hr = np.clip(hr, 0.0, 1.0)
+    return hr, confidence
+
 def back_projection_sr(aligned_y, scale=2, num_iters=5):
 # Perform super-resolution on aligned Y frames using iterative back-projection.
 # Args:
@@ -108,14 +157,81 @@ def back_projection_sr(aligned_y, scale=2, num_iters=5):
     # Clip to valid range [0, 1]
     hr = np.clip(hr, 0.0, 1.0)
     return hr
-    
+
+def crop_to_full_contribution_region(sr_y, confidence_maps, num_frames, shrink=20):
+    """
+    Crops sr_y to the smallest region where all pixels have full contribution (max confidence),
+    with optional inward shrinking (negative padding).
+
+    Args:
+        sr_y (np.ndarray): High-resolution Y image.
+        confidence_maps (np.ndarray): Raw confidence values.
+        num_frames (int): Total number of input frames.
+        shrink (int): How much to shrink the bounding box inward from each side.
+
+    Returns:
+        cropped (np.ndarray): Cropped high-confidence-only region.
+        bbox (tuple): (x, y, w, h) of the final crop.
+    """
+    normalized_conf = confidence_maps / num_frames
+    max_conf = normalized_conf.max()
+
+    # Mask only the pixels with exact full contribution
+    mask = (normalized_conf >= max_conf - 1e-4).astype(np.uint8)
+
+    coords = cv2.findNonZero(mask)
+    if coords is None:
+        raise ValueError("No fully confident region found.")
+
+    x, y, w, h = cv2.boundingRect(coords)
+
+    # Shrink inward (safe crop inside the bbox)
+    x_new = x + shrink
+    y_new = y + shrink
+    x_end = x + w - shrink
+    y_end = y + h - shrink
+
+    if x_end <= x_new or y_end <= y_new:
+        raise ValueError("Shrink value too large: resulting box has zero or negative size.")
+
+    cropped = sr_y[y_new:y_end, x_new:x_end]
+    return cropped, (x_new, y_new, x_end - x_new, y_end - y_new)
+
+def show_confidence_with_crop(conf_map, x, y, w, h):
+    """
+    Display normalized confidence map with a visible crop box using NumPy.
+    Args:
+        conf_map (np.ndarray): Normalized confidence map [0, 1].
+        x, y, w, h (int): Crop box coordinates.
+    """
+    # Create RGB heatmap from confidence map
+    norm_conf_rgb = plt.cm.hot(conf_map)[:, :, :3]  # shape H×W×3, RGB
+
+    # Draw rectangle using numpy (set border pixels to a cyan color)
+    border_color = [0.0, 1.0, 1.0]  # cyan
+
+    norm_conf_rgb[y:y+1, x:x+w] = border_color      # top
+    norm_conf_rgb[y+h-1:y+h, x:x+w] = border_color  # bottom
+    norm_conf_rgb[y:y+h, x:x+1] = border_color      # left
+    norm_conf_rgb[y:y+h, x+w-1:x+w] = border_color  # right
+
+    plt.imshow(norm_conf_rgb)
+    plt.title("Normalized Confidence Map with Crop Box")
+    plt.axis("off")
+    plt.show()
+
+# ========= YCbCr Loading =========
+def load_frame(path):
+    img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB).astype(np.float32)/255.0
+    Y, Cb, Cr = rgb_to_ycbcr(img)
+    return Y, Cb, Cr
 
 def main():
     frame_files = sorted(glob.glob(f"{FRAME_DIR}/frame_*.jpg"))
     print(f"📂 Found {len(frame_files)} frames.")
 
     if len(frame_files) < 2:
-        print("❌ Not enough frames to stitch.")
+        print("Not enough frames to stitch.")
         return
 
     print("🔄 Loading and converting images...")
@@ -127,63 +243,45 @@ def main():
         cbs.append(cb)
         crs.append(cr)
 
-    print(f"✅ Loaded {len(ys)} YCbCr frames.")
+    print(f"Loaded {len(ys)} YCbCr frames.")
+    
+    base_frame = 0
+    batch = 0
 
-    aligned_y, num = align_frames_ecc(ys[0], ys[1:])
-    print(f"{len(aligned_y)} frames aligned.")
+    while (base_frame < len(ys) - 4):
+        start = time.time()
 
-    sr_y = back_projection_sr(aligned_y, scale=5, num_iters=5)
-    print("Original LR shape:", aligned_y[0].shape)
-    print("SR Y shape:", sr_y.shape)
+        aligned_y, num = align_frames_ecc(ys[base_frame], ys[base_frame+1:])
+        print(f"Batch {batch}: {len(aligned_y)} frames aligned. New Base Frame: {num+base_frame}")
+        
+        sr_y, confidence_maps = back_projection_sr_confidence(aligned_y, scale=2, num_iters=5)
+        cropped_y, (x, y, w, h) = crop_to_full_contribution_region(sr_y, confidence_maps, num_frames=len(aligned_y))
+       
 
-    # Step: Upsample Cb and Cr from reference
-    cb_ref = cbs[0]
-    cr_ref = crs[0]
+        cb_ref = cbs[base_frame]
+        cr_ref = crs[base_frame]
 
-    sr_cb = cv2.resize(cb_ref, sr_y.shape[::-1], interpolation=cv2.INTER_CUBIC)
-    sr_cr = cv2.resize(cr_ref, sr_y.shape[::-1], interpolation=cv2.INTER_CUBIC)
+        # Resize Cb and Cr to match full sr_y first
+        sr_cb_full = cv2.resize(cb_ref, sr_y.shape[::-1], interpolation=cv2.INTER_CUBIC)
+        sr_cr_full = cv2.resize(cr_ref, sr_y.shape[::-1], interpolation=cv2.INTER_CUBIC)
 
-    # Step: Convert to RGB
-    from util import ycbcr_to_rgb
-    sr_rgb = ycbcr_to_rgb(sr_y, sr_cb, sr_cr)
+        # Then crop to match cropped_y
+        sr_cb = sr_cb_full[y:y+h, x:x+w]
+        sr_cr = sr_cr_full[y:y+h, x:x+w]
 
-    # Step: Convert to 8-bit and save
-    sr_rgb_8bit = (sr_rgb * 255.0).astype(np.uint8)
-    os.makedirs("output", exist_ok=True)
-    cv2.imwrite("output/sr_rgb_5.png", cv2.cvtColor(sr_rgb_8bit, cv2.COLOR_RGB2BGR))
+        # sr_rgb = ycbcr_to_rgb(sr_y, sr_cb, sr_cr)
+        sr_rgb = ycbcr_to_rgb(cropped_y, sr_cb, sr_cr)
 
-    # Step: Show final image
-    plt.imshow(sr_rgb)
-    plt.title("Final Super-Resolved RGB Image")
-    plt.axis('off')
-    plt.show()
+        sr_rgb_8bit = (sr_rgb * 255.0).astype(np.uint8)
+        os.makedirs(f"output/CONFIDENCE_HR_{FRAME_DIR}", exist_ok=True)
+        cv2.imwrite(f"output/CONFIDENCE_HR_{FRAME_DIR}/sr_rgb_{batch:03d}.png", cv2.cvtColor(sr_rgb_8bit, cv2.COLOR_RGB2BGR))
 
-    # plt.figure(figsize=(12, 5))
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(cv2.resize(aligned_y[0], sr_y.shape[::-1], interpolation=cv2.INTER_CUBIC), cmap='gray')
-    # plt.title("Bicubic Upscale (Baseline)")
-    # plt.axis('off')
+        print(f"     output/HR_{FRAME_DIR}/sr_rgb_{batch}.png")
+        end = time.time()
+        print(f"     {end - start} Seconds")
 
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(sr_y, cmap='gray')
-    # plt.title("Super-Resolved (Back-Projection)")
-    # plt.axis('off')
-    # plt.show()
-
-    # plt.imshow(sr_y, cmap='gray')
-    # plt.title("Super-Resolved Y Image (x2)")
-    # plt.axis('off')
-    # plt.show()
-
-    # stack = np.stack(aligned_y, axis=0)  # shape: (N, H, W)
-    # std_map = np.std(stack, axis=0)
-
-    # print(f"{len(aligned_y)} frames aligned.")
-
-    # plt.imshow(std_map, cmap='hot')
-    # plt.title("Pixel-wise Std Dev (alignment jitter)")
-    # plt.colorbar()
-    # plt.show()
+        base_frame = base_frame + num
+        batch += 1
 
 if __name__ == "__main__":
     main()

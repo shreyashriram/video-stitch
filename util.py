@@ -62,3 +62,70 @@ def ycbcr_to_rgb(Y, Cb, Cr):
     rgb = np.stack([R, G, B], axis=2)
     rgb = np.clip(rgb, 0.0, 1.0)
     return rgb
+import cv2
+import numpy as np
+
+
+def visualize_sift_keypoints_with_orientations(image, keypoints, radius=10, color=(0, 0, 255)):
+    """
+    Visualize SIFT keypoints with red circles and orientation arrows.
+    
+    Args:
+        image: Input image (BGR or grayscale)
+        keypoints: List of cv2.KeyPoint objects
+        radius: Radius of keypoint circle
+        color: BGR color for keypoints (default: red)
+        
+    Returns:
+        vis_image: Image with keypoints visualized
+    """
+    if len(image.shape) == 2:
+        vis_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    else:
+        vis_image = image.copy()
+
+    for kp in keypoints:
+        x, y = int(kp.pt[0]), int(kp.pt[1])
+        angle = np.deg2rad(kp.angle)
+        length = int(radius * 2)
+
+        # Draw circle
+        cv2.circle(vis_image, (x, y), radius, color, 1, cv2.LINE_AA)
+
+        # Draw orientation arrow
+        dx = int(length * np.cos(angle))
+        dy = int(length * np.sin(angle))
+        cv2.arrowedLine(vis_image, (x, y), (x + dx, y + dy), color, 1, cv2.LINE_AA, tipLength=0.3)
+
+    return vis_image
+
+
+
+def visualize_sift_matches(img1, kp1, img2, kp2, matches, name1="img1", name2="img2", num_matches=50):
+    """
+    Visualize SIFT feature matches between two images.
+
+    Args:
+        img1: First image (grayscale or BGR)
+        kp1: Keypoints from image 1
+        img2: Second image
+        kp2: Keypoints from image 2
+        matches: List of cv2.DMatch objects
+        name1: Label or filename for image 1
+        name2: Label or filename for image 2
+        num_matches: Number of top matches to draw
+    """
+    if not matches:
+        print(f"No matches between {name1} and {name2}.")
+        return
+
+    matches_to_draw = matches[:num_matches]
+    img_matches = cv2.drawMatches(
+        img1, kp1, img2, kp2, matches_to_draw, None,
+        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+    )
+
+    window_name = f"Matches: {name1} <-> {name2}"
+    cv2.imshow(window_name, img_matches)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
