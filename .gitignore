@@ -1,3 +1,11 @@
 /extracted_frames
-/output/debug*
+/output
 **/.DS_Store
+__pycache__
+
+output/HR_extracted_frames
+*.png
+*.jpg
+/FINAL_MM
+video_data/
+CHECK/
